@@ -35,6 +35,15 @@ jobs:
           printf "\n84831b9409646a918e30573bab4c9c91346d8abd" > $SDK/licenses/android-sdk-preview-license
           printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > $SDK/licenses/android-sdk-arm-dbt-license
 
+      - name: 安装 CMake 3.31.6 到 SDK
+        run: |
+          SDK=/usr/local/lib/android/sdk
+          mkdir -p $SDK/cmake/3.31.6
+          curl -L -o cmake.tar.gz \
+            https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz
+          tar -xzf cmake.tar.gz -C $SDK/cmake/3.31.6 --strip-components=1
+          $SDK/cmake/3.31.6/bin/cmake --version
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
