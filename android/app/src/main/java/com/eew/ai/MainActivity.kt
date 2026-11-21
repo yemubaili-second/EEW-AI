@@ -39,8 +39,9 @@ class MainActivity : Activity() {
     private var history = JSONArray()
     private var ready = false
 
-    private var chars: List<Char> = listOf()
-    private var charIndex: HashMap<Char, Int> = HashMap()
+    // 字表按"码点"切分，与 Python 的字符数量保持一致
+    private var chars: List<String> = listOf()
+    private var charIndex: HashMap<String, Int> = HashMap()
     private var ctx = 0
     private var dim = 0
     private var heads = 0
@@ -197,15 +198,22 @@ class MainActivity : Activity() {
         input.isEnabled = !busy && ready
     }
 
+    // ---------- 字符工具（按码点切分） ----------
+
+    private fun splitCodePoints(s: String): List<String> =
+        s.codePoints().toArray().map { String(Character.toChars(it)) }
+
     // ---------- 模型加载 ----------
 
     private fun loadModel() {
         val text = assets.open("model.json").bufferedReader(Charsets.UTF_8).use { it.readText() }
         val json = JSONObject(text)
-        chars = json.getString("chars").toList()
+
+        chars = splitCodePoints(json.getString("chars"))
         charIndex = HashMap()
         chars.forEachIndexed { i, c -> charIndex[c] = i }
         vocab = chars.size
+
         ctx = json.getInt("ctx")
         dim = json.getInt("dim")
         heads = json.getInt("heads")
@@ -218,6 +226,14 @@ class MainActivity : Activity() {
         lnfB = flat(json.getJSONArray("ln_f_b"))
         headW = flat(json.getJSONArray("head_w"))
         headB = flat(json.getJSONArray("head_b"))
+
+        // 检查字表与参数是否对得上，对不上就给出明确提示，而不是运行时崩溃
+        if (headB.size != vocab) {
+            throw IllegalStateException("字表长度 $vocab 与模型输出 ${headB.size} 不一致")
+        }
+        if (emb.size != vocab * dim) {
+            throw IllegalStateException("嵌入大小与字表不一致")
+        }
 
         blocks = Array(layers) { i ->
             val b = json.getJSONObject("l$i")
@@ -237,33 +253,34 @@ class MainActivity : Activity() {
 
     // ---------- 语言判断 ----------
 
-    private fun isCjk(c: Char): Boolean = c in '\u4e00'..'\u9fff'
-
-    private fun isLatin(c: Char): Boolean = c in 'a'..'z' || c in 'A'..'Z' || c == ' '
+    private fun isCjkCp(cp: Int): Boolean = cp in 0x4e00..0x9fff
 
     private fun detectLang(s: String): Lang {
-        if (s.any { isCjk(it) }) return Lang.ZH
-        if (s.any { it in 'a'..'z' || it in 'A'..'Z' }) return Lang.EN
+        if (s.codePoints().anyMatch { isCjkCp(it) }) return Lang.ZH
+        if (s.codePoints().anyMatch { it in 'a'.code..'z'.code || it in 'A'.code..'Z'.code }) return Lang.EN
         return Lang.ZH
     }
 
-    private fun allowedFor(lang: Lang, c: Char): Boolean {
-        if (c == '\n' || c in '0'..'9') return true
+    private fun allowedFor(lang: Lang, c: String): Boolean {
+        val cp = c.codePointAt(0)
+        if (c == "\n" || cp in '0'.code..'9'.code) return true
         return when (lang) {
-            Lang.ZH -> isCjk(c) || c == ' ' || c in CJK_PUNCT
-            Lang.EN -> isLatin(c) || c in EN_PUNCT
+            Lang.ZH -> isCjkCp(cp) || c == " " || CJK_PUNCT.contains(c)
+            Lang.EN -> (cp in 'a'.code..'z'.code) || (cp in 'A'.code..'Z'.code) ||
+                    c == " " || EN_PUNCT.contains(c)
         }
     }
 
     // ---------- 数学工具 ----------
 
-    // x: (n, inD)，W: (inD, outD) 行优先，结果 (n, outD)
+    // x: (n, inD)；W 按 PyTorch 的存法 (outD, inD) 行优先，即 W[j*inD + i]；结果 (n, outD)
     private fun linear(x: FloatArray, n: Int, inD: Int, W: FloatArray, b: FloatArray, outD: Int): FloatArray {
         val out = FloatArray(n * outD)
         for (t in 0 until n) {
             for (j in 0 until outD) {
                 var s = b[j]
-                for (i in 0 until inD) s += x[t * inD + i] * W[i * outD + j]
+                val base = j * inD
+                for (i in 0 until inD) s += x[t * inD + i] * W[base + i]
                 out[t * outD + j] = s
             }
         }
@@ -287,6 +304,7 @@ class MainActivity : Activity() {
         return out
     }
 
+    // GELU 的近似实现，与 PyTorch 的精确 GELU 差异很小
     private fun gelu(v: Float): Float {
         return 0.5f * v * (1f + tanh(0.7978845608f * (v + 0.044715f * v * v * v)))
     }
@@ -335,7 +353,6 @@ class MainActivity : Activity() {
         val T = ctx
         val D = dim
 
-        // 字向量 + 位置向量
         var h = FloatArray(T * D)
         for (t in 0 until T) {
             val id = window[t]
@@ -343,12 +360,10 @@ class MainActivity : Activity() {
         }
 
         for (blk in blocks) {
-            // 注意力子层（残差）
             val a = layerNorm(h, T, D, blk.ln1W, blk.ln1B)
             val att = attention(a, T, blk)
             for (i in h.indices) h[i] += att[i]
 
-            // 前馈子层（残差）
             val b = layerNorm(h, T, D, blk.ln2W, blk.ln2B)
             val f1 = linear(b, T, D, blk.ff1W, blk.ff1B, ff)
             for (i in f1.indices) f1[i] = gelu(f1[i])
@@ -356,7 +371,6 @@ class MainActivity : Activity() {
             for (i in h.indices) h[i] += f2[i]
         }
 
-        // 只取最后一个位置，做最终归一化和输出
         val last = FloatArray(D) { h[(T - 1) * D + it] }
         val lastN = layerNorm(last, 1, D, lnfW, lnfB)
         return linear(lastN, 1, D, headW, headB, vocab)
@@ -369,7 +383,7 @@ class MainActivity : Activity() {
         val allowed = BooleanArray(vocab) { allowedFor(lang, chars[it]) }
 
         val seq = ArrayList<Int>()
-        for (c in prompt) charIndex[c]?.let { seq.add(it) }
+        for (c in splitCodePoints(prompt)) charIndex[c]?.let { seq.add(it) }
         if (seq.isEmpty()) return "输入的文字不在模型词表中"
 
         val gen = ArrayList<Int>()
@@ -393,7 +407,7 @@ class MainActivity : Activity() {
             seq.add(id)
             gen.add(id)
         }
-        return gen.joinToString("") { chars[it].toString() }
+        return gen.joinToString("") { chars[it] }
     }
 
     private fun sample(logits: FloatArray, temp: Float): Int {
