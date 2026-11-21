@@ -2,6 +2,13 @@ name: build-own-apk
 
 on: workflow_dispatch
 
+concurrency:
+  group: train-memory
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,29 +23,27 @@ jobs:
       - name: 安装 numpy
         run: pip install numpy
 
-      - name: 恢复已下载过的书籍缓存
-        uses: actions/cache/restore@v4
-        with:
-          path: books
-          key: books-${{ github.run_id }}
-          restore-keys: |
-            books-
-
-      - name: 下载公共领域书籍作为语料（已缓存的跳过）
+      - name: 下载新增的书籍（已在仓库 books/ 里的跳过）
         run: python get_corpus.py
-
-      - name: 保存书籍缓存（无论成功与否）
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: books
-          key: books-${{ github.run_id }}
 
       - name: 查看语料大小
         run: wc -m corpus.txt
 
-      - name: 训练模型（从零开始，不使用任何预训练权重）
-        run: python train.py
+      - name: 训练模型（断点续训，从零开始不使用预训练权重）
+        run: python -u train.py
+
+      - name: 把书籍和训练断点保存回仓库（无论成功与否）
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add books ckpt
+          if git diff --cached --quiet; then
+            echo "没有新内容需要保存"
+          else
+            git commit -m "保存训练记忆 run ${{ github.run_number }}"
+            git push
+          fi
 
       - uses: actions/setup-java@v4
         with:
