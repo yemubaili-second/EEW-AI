@@ -8,7 +8,7 @@ BATCH, LR = 4096, 0.6
 SAVE_EVERY = 300         # 每 300 批保存一次断点
 STAGE_EPOCHS = 5         # 每组新书训练的轮数
 REPLAY_RATIO = 0.3       # 训练新书时混入旧书内容的比例
-CHARSET_VERSION = 3      # 字表规则版本：3 表示保留全部字符，出现 1 次即收录
+CHARSET_VERSION = 5      # 字表规则版本：版本不一致时全部参数清空，从零训练
 BOOK_DIR = "books"
 CKPT_DIR = "ckpt"
 CKPT = os.path.join(CKPT_DIR, "state.npz")
@@ -189,10 +189,8 @@ if not books:
 
 st = load_state()
 if st["ver"] != CHARSET_VERSION:
-    print(f"字表版本 {st['ver']} -> {CHARSET_VERSION}，清空已训练记录，全部书籍将用新字表重新训练一次", flush=True)
-    st["trained"], st["stage"] = [], []
-    st["stage_epoch"], st["stage_batch"] = 0, 0
-    st["ver"] = CHARSET_VERSION
+    print(f"字表版本 {st['ver']} -> {CHARSET_VERSION}，清空全部参数和记录，从零开始训练", flush=True)
+    st = fresh_state()
 
 chars, new_chars = build_vocab(books, st["chars"])
 expand(st, len(new_chars), np.random.default_rng(len(chars)))
