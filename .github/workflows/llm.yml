@@ -7,6 +7,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
+      - uses: actions/checkout@v4
+
       - name: 下载 Qwen2.5-0.5B 模型
         run: |
           mkdir -p model
@@ -16,6 +18,14 @@ jobs:
 
       - name: 下载 llama.cpp 源码
         run: git clone --depth 1 https://github.com/ggerganov/llama.cpp.git
+
+      - name: 放入模型、语料和替换的界面代码
+        run: |
+          EX=llama.cpp/examples/llama.android
+          mkdir -p $EX/app/src/main/assets
+          cp model/qwen2.5-0.5b-instruct-q4_k_m.gguf $EX/app/src/main/assets/model.gguf
+          cp corpus.txt $EX/app/src/main/assets/corpus.txt
+          cp android-override/MainActivity.kt $EX/app/src/main/java/com/example/llama/MainActivity.kt
 
       - uses: actions/setup-java@v4
         with:
@@ -28,15 +38,7 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug
 
-      - name: 查找生成的 APK
-        run: find llama.cpp/examples/llama.android -name "*.apk"
-
       - uses: actions/upload-artifact@v4
         with:
           name: llm-apk
           path: llama.cpp/examples/llama.android/app/build/outputs/apk/debug/*.apk
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: model
-          path: model/*.gguf
