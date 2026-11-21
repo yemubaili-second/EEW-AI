@@ -42,10 +42,22 @@ jobs:
           git add books ckpt
           if git diff --cached --quiet; then
             echo "没有新内容需要保存"
-          else
-            git commit -m "保存训练记忆 run ${{ github.run_number }}"
-            git push
+            exit 0
           fi
+          git commit -m "保存训练记忆 run ${{ github.run_number }}"
+          for i in 1 2 3; do
+            git fetch origin main
+            if git merge --no-edit -X ours origin/main; then
+              if git push origin HEAD:main; then
+                echo "推送成功"
+                exit 0
+              fi
+            fi
+            echo "推送冲突，第 $i 次重试"
+            sleep 15
+          done
+          echo "推送失败"
+          exit 1
 
       - uses: actions/setup-java@v4
         with:
