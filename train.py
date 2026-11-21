@@ -2,21 +2,19 @@ import json, os, time, glob, collections
 import numpy as np
 
 RUN_SECONDS = 300 * 60   # 每次运行最多训练 300 分钟
-MIN_COUNT = 30           # 出现少于 30 次的字不纳入字表
+MIN_COUNT = 30           # 出现少于 30 次的字符不纳入字表
 CTX, D, H = 6, 32, 128
 BATCH, LR = 4096, 0.6
 SAVE_EVERY = 300         # 每 300 批保存一次断点
-STAGE_EPOCHS = 2         # 每组新书训练的轮数
+STAGE_EPOCHS = 5         # 每组新书训练的轮数
 REPLAY_RATIO = 0.3       # 训练新书时混入旧书内容的比例
+CHARSET_VERSION = 2      # 字表规则版本：2 表示保留所有字符（含英文）
 BOOK_DIR = "books"
 CKPT_DIR = "ckpt"
 CKPT = os.path.join(CKPT_DIR, "state.npz")
 MODEL_OUT = "android/app/src/main/assets/model.json"
 PARAMS = ["emb", "w1", "b1", "w2", "b2"]
 F = np.float32
-
-def is_cjk(c):
-    return ('\u4e00' <= c <= '\u9fff') or c in '，。！？、；：“”‘’（）《》\n'
 
 def load_books():
     books = {}
@@ -36,6 +34,7 @@ def fresh_state():
         "b2": np.zeros(0, F),
         "chars": "", "trained": [], "stage": [],
         "stage_epoch": 0, "stage_batch": 0, "runs": 0,
+        "ver": CHARSET_VERSION,
     }
 
 def load_state():
@@ -50,6 +49,7 @@ def load_state():
         "stage_epoch": int(z["stage_epoch"]),
         "stage_batch": int(z["stage_batch"]),
         "runs": int(z["runs"]),
+        "ver": int(z["ver"]) if "ver" in z.files else 1,
     })
     return st
 
@@ -63,7 +63,8 @@ def save_state(st):
              stage=np.array(st["stage"], dtype=np.int64),
              stage_epoch=np.array(st["stage_epoch"]),
              stage_batch=np.array(st["stage_batch"]),
-             runs=np.array(st["runs"]))
+             runs=np.array(st["runs"]),
+             ver=np.array(st["ver"]))
     os.replace(tmp, CKPT)
 
 def build_vocab(books, old_chars):
@@ -72,11 +73,11 @@ def build_vocab(books, old_chars):
         counts.update(t)
     old_set = set(old_chars)
     new = sorted(c for c, n in counts.items()
-                 if n >= MIN_COUNT and is_cjk(c) and c not in old_set)
+                 if n >= MIN_COUNT and c not in old_set)
     return old_chars + "".join(new), new
 
 def expand(st, n, rng):
-    # 新字追加到字表末尾，已有字的参数保持不变
+    # 新字符追加到字表末尾，已有字符的参数保持不变
     if n == 0:
         return
     st["emb"] = np.vstack([st["emb"], (rng.standard_normal((n, D)) * 0.1).astype(F)])
@@ -163,7 +164,7 @@ def train_stage(st, data, samples, T0):
                 save_state(st)
 
         print(f"第 {st['stage_epoch'] + 1}/{STAGE_EPOCHS} 轮 loss {total / max(seen, 1):.4f} "
-              f"用时 {time.time() - t_ep:.0f} 秒")
+              f"用时 {time.time() - t_ep:.0f} 秒", flush=True)
         st["stage_epoch"] += 1
         st["stage_batch"] = 0
         save_state(st)
@@ -187,13 +188,20 @@ if not books:
     raise SystemExit("books 目录里没有书，请先运行 get_corpus.py")
 
 st = load_state()
+if st["ver"] != CHARSET_VERSION:
+    # 字表规则升级：参数保留，但之前的训练只学到了中文，需要用全部字符重新学一遍
+    print(f"字表版本 {st['ver']} -> {CHARSET_VERSION}，清空已训练记录，全部书籍将用新字表重新训练一次")
+    st["trained"], st["stage"] = [], []
+    st["stage_epoch"], st["stage_batch"] = 0, 0
+    st["ver"] = CHARSET_VERSION
+
 chars, new_chars = build_vocab(books, st["chars"])
 expand(st, len(new_chars), np.random.default_rng(len(chars)))
 st["chars"] = chars
 st["runs"] += 1
 ix = {c: i for i, c in enumerate(chars)}
 print(f"书籍 {len(books)} 本，字符 {len(chars)} 个（本次新增 {len(new_chars)}），"
-      f"已训练 {len(st['trained'])} 本，第 {st['runs']} 次运行")
+      f"已训练 {len(st['trained'])} 本，第 {st['runs']} 次运行", flush=True)
 
 T0 = time.time()
 status = "all_done"
@@ -202,19 +210,19 @@ while True:
     if prep is None:
         break
     data, samples, stage_ids = prep
-    print(f"开始训练一组：{len(stage_ids)} 本新书，样本 {len(samples)} 个")
+    print(f"开始训练一组：{len(stage_ids)} 本书，样本 {len(samples)} 个", flush=True)
     if train_stage(st, data, samples, T0) == "timeout":
         status = "timeout"
         break
     st["trained"] = sorted(set(st["trained"]) | set(stage_ids))
     st["stage"], st["stage_epoch"], st["stage_batch"] = [], 0, 0
     save_state(st)
-    print(f"本组完成，累计已训练 {len(st['trained'])} 本")
+    print(f"本组完成，累计已训练 {len(st['trained'])} 本", flush=True)
 
 export(st)
 save_state(st)
 if status == "timeout":
-    print("已达到本次 300 分钟上限，断点已保存，下次运行会接着训练")
+    print("已达到本次 300 分钟上限，断点已保存，下次运行会接着训练", flush=True)
 else:
-    print("所有书籍已训练完成")
-print(f"已导出模型，本次用时 {(time.time() - T0) / 60:.1f} 分钟")
+    print("所有书籍已训练完成", flush=True)
+print(f"已导出模型，本次用时 {(time.time() - T0) / 60:.1f} 分钟", flush=True)
