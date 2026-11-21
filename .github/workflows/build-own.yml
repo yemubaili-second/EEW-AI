@@ -5,7 +5,7 @@ on: workflow_dispatch
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -16,7 +16,13 @@ jobs:
       - name: 安装 numpy
         run: pip install numpy
 
-      - name: 训练模型
+      - name: 下载公共领域书籍作为语料
+        run: python get_corpus.py
+
+      - name: 查看语料大小
+        run: wc -m corpus.txt
+
+      - name: 训练模型（从零开始，不使用任何预训练权重）
         run: python train.py
 
       - uses: actions/setup-java@v4
