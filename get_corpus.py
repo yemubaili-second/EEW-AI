@@ -1,5 +1,4 @@
-import re, time, urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os, re, time, urllib.request
 
 BOOKS = {
     # 中文
@@ -43,8 +42,12 @@ BOOKS = {
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; EEW-AI-corpus/1.0)"}
 
-DOWNLOAD_BUDGET = 30 * 60  # 下载总时间最多 30 分钟
-WORKERS = 4                # 同时下载 4 本
+DOWNLOAD_BUDGET = 30 * 60   # 下载总时间最多 30 分钟
+GAP_BETWEEN_BOOKS = 5       # 每本下载后停顿 5 秒
+BACKOFF = [10, 20, 40, 80]  # 失败后依次等待的秒数
+CACHE_DIR = "books"         # 每本书单独保存在这里
+
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 def urls_for(book_id):
     return [
@@ -70,39 +73,48 @@ def strip_gutenberg(raw):
 def fetch(book_id):
     last_error = None
     for url in urls_for(book_id):
-        for attempt in range(2):
+        for wait in [0] + BACKOFF:
+            if wait:
+                time.sleep(wait)
             try:
                 req = urllib.request.Request(url, headers=HEADERS)
-                raw_bytes = urllib.request.urlopen(req, timeout=30).read()
+                raw_bytes = urllib.request.urlopen(req, timeout=60).read()
                 return strip_gutenberg(decode(raw_bytes))
             except Exception as e:
                 last_error = e
-                time.sleep(3)
     raise last_error
 
 T0 = time.time()
-results = {}
+parts = []
+from_cache = 0
 
-def job(book_id):
+for book_id, name in BOOKS.items():
+    path = os.path.join(CACHE_DIR, f"{book_id}.txt")
+
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            body = f.read()
+        parts.append(body)
+        from_cache += 1
+        print(f"缓存 {name}: {len(body)} 字符")
+        continue
+
     if time.time() - T0 > DOWNLOAD_BUDGET:
-        raise TimeoutError("下载总时间已到 30 分钟，未开始")
-    return fetch(book_id)
+        print(f"下载时间已到 30 分钟，跳过剩余书籍：{name} 及之后")
+        break
 
-with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-    futures = {pool.submit(job, bid): bid for bid in BOOKS}
-    for fut in as_completed(futures):
-        bid = futures[fut]
-        name = BOOKS[bid]
-        try:
-            body = fut.result()
-            results[bid] = body
-            print(f"OK  {name}: {len(body)} 字符")
-        except Exception as e:
-            print(f"跳过 {name}: {e}")
+    try:
+        body = fetch(book_id)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+        parts.append(body)
+        print(f"OK  {name}: {len(body)} 字符")
+    except Exception as e:
+        print(f"跳过 {name}: {e}")
+    time.sleep(GAP_BETWEEN_BOOKS)
 
-parts = [results[bid] for bid in BOOKS if bid in results]
 text = "\n\n".join(parts)
-print(f"语料合计 {len(text)} 字符，共 {len(parts)} 本，用时 {(time.time() - T0) / 60:.1f} 分钟")
+print(f"语料合计 {len(text)} 字符，共 {len(parts)} 本（其中缓存 {from_cache} 本），用时 {(time.time() - T0) / 60:.1f} 分钟")
 
 if len(text) < 1_000_000:
     raise SystemExit("语料太少，下载失败，已停止。请查看上面的'跳过'行。")
