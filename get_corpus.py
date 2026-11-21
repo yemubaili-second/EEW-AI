@@ -41,7 +41,6 @@ BOOKS = {
 }
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; EEW-AI-corpus/1.0)"}
-
 DOWNLOAD_BUDGET = 30 * 60   # 下载总时间最多 30 分钟
 GAP_BETWEEN_BOOKS = 5       # 每本下载后停顿 5 秒
 BACKOFF = [10, 20, 40, 80]  # 失败后依次等待的秒数
@@ -114,7 +113,7 @@ for book_id, name in BOOKS.items():
     time.sleep(GAP_BETWEEN_BOOKS)
 
 text = "\n\n".join(parts)
-print(f"语料合计 {len(text)} 字符，共 {len(parts)} 本（其中缓存 {from_cache} 本），用时 {(time.time() - T0) / 60:.1f} 分钟")
+print(f"语料合计 {len(text)} 字符，共 {len(parts)} 本（缓存 {from_cache} 本），用时 {(time.time() - T0) / 60:.1f} 分钟")
 
 if len(text) < 1_000_000:
     raise SystemExit("语料太少，下载失败，已停止。请查看上面的'跳过'行。")
