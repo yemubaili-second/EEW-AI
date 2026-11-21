@@ -1,7 +1,9 @@
-import json, os
+import json, os, time
 import numpy as np
 
 np.random.seed(0)
+EPOCH_SECONDS = 60 * 60  # 每轮最多 60 分钟，超时就切换到下一轮
+
 text = open("corpus.txt", encoding="utf-8").read().replace("\r", "")
 chars = sorted(set(text))
 V = len(chars)
@@ -23,8 +25,12 @@ b2 = np.zeros(V)
 
 for epoch in range(EPOCHS):
     perm = np.random.permutation(N)
-    total = 0.0
+    total, seen = 0.0, 0
+    start = time.time()
     for s in range(0, N, BATCH):
+        if time.time() - start > EPOCH_SECONDS:
+            print(f"第 {epoch + 1} 轮超过 60 分钟，已切换到下一轮，本轮处理了 {seen}/{N} 个样本")
+            break
         idx = perm[s:s + BATCH]
         xb, yb = X[idx], Y[idx]
         B = len(idx)
@@ -36,6 +42,7 @@ for epoch in range(EPOCHS):
         p = np.exp(logits)
         p /= p.sum(axis=1, keepdims=True)
         total += -np.log(p[np.arange(B), yb] + 1e-12).sum()
+        seen += B
 
         dl = p.copy()
         dl[np.arange(B), yb] -= 1
@@ -55,7 +62,7 @@ for epoch in range(EPOCHS):
         w2 -= LR * dw2
         b2 -= LR * db2
 
-    print(f"epoch {epoch + 1}/{EPOCHS} loss {total / N:.4f}")
+    print(f"epoch {epoch + 1}/{EPOCHS} loss {total / max(seen, 1):.4f} 用时 {time.time() - start:.0f} 秒")
 
 os.makedirs("android/app/src/main/assets", exist_ok=True)
 
