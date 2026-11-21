@@ -27,10 +27,13 @@ jobs:
           cp corpus.txt $EX/app/src/main/assets/corpus.txt
           cp android-override/MainActivity.kt $EX/app/src/main/java/com/example/llama/MainActivity.kt
 
-      - name: 接受 Android SDK 许可证并安装 NDK
+      - name: 接受 Android SDK 许可证
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          yes | sdkmanager "ndk;29.0.13113456" > /dev/null
+          SDK=/usr/local/lib/android/sdk
+          mkdir -p $SDK/licenses
+          printf "\n8933bad161af4178b1185d1a37fbf41ea5269c55" > $SDK/licenses/android-sdk-license
+          printf "\n84831b9409646a918e30573bab4c9c91346d8abd" > $SDK/licenses/android-sdk-preview-license
+          printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > $SDK/licenses/android-sdk-arm-dbt-license
 
       - uses: actions/setup-java@v4
         with:
