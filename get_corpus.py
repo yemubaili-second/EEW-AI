@@ -1,4 +1,4 @@
-import re, urllib.request
+import re, time, urllib.request
 
 BOOKS = {
     # 中文
@@ -40,7 +40,14 @@ BOOKS = {
     38769: "A Course of Pure Mathematics",
 }
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; EEW-AI-corpus/1.0)"}
+
+# 官方网站 + 两个镜像站，依次尝试
+MIRRORS = [
+    "https://www.gutenberg.org/cache/epub/{id}/pg{id}.txt",
+    "https://aleph.gutenberg.org/cache/epub/{id}/pg{id}.txt",
+    "https://gutenberg.pglaf.org/cache/epub/{id}/pg{id}.txt",
+]
 
 def decode(raw_bytes):
     try:
@@ -57,19 +64,22 @@ def strip_gutenberg(raw):
         raw = raw[:m.start()]
     return raw.strip()
 
+def download(url):
+    req = urllib.request.Request(url, headers=HEADERS)
+    return urllib.request.urlopen(req, timeout=60).read()
+
 def fetch(book_id):
-    urls = [
-        f"https://www.gutenberg.org/cache/epub/{book_id}/pg{book_id}.txt",
-        f"https://www.gutenberg.org/ebooks/{book_id}.txt.utf-8",
-    ]
     last_error = None
-    for url in urls:
-        try:
-            req = urllib.request.Request(url, headers=HEADERS)
-            raw_bytes = urllib.request.urlopen(req, timeout=60).read()
-            return strip_gutenberg(decode(raw_bytes))
-        except Exception as e:
-            last_error = e
+    for template in MIRRORS:
+        url = template.format(id=book_id)
+        for attempt in range(5):
+            try:
+                return strip_gutenberg(decode(download(url)))
+            except Exception as e:
+                last_error = e
+                wait = 5 * (2 ** attempt)
+                time.sleep(wait)
+        # 当前镜像多次失败，换下一个镜像
     raise last_error
 
 parts = []
@@ -80,6 +90,7 @@ for book_id, name in BOOKS.items():
         print(f"OK  {name}: {len(body)} 字符")
     except Exception as e:
         print(f"跳过 {name}: {e}")
+    time.sleep(2)
 
 text = "\n\n".join(parts)
 print(f"语料合计 {len(text)} 字符，共 {len(parts)} 本")
