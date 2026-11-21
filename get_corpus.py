@@ -41,18 +41,16 @@ BOOKS = {
 }
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; EEW-AI-corpus/1.0)"}
-DOWNLOAD_BUDGET = 30 * 60   # 下载总时间最多 30 分钟
-GAP_BETWEEN_BOOKS = 5       # 每本下载后停顿 5 秒
-BACKOFF = [10, 20, 40, 80]  # 失败后依次等待的秒数
-CACHE_DIR = "books"         # 每本书单独保存在这里
 
-os.makedirs(CACHE_DIR, exist_ok=True)
+MIRRORS = [
+    "https://www.gutenberg.org/cache/epub/{id}/pg{id}.txt",
+    "https://gutenberg.pglaf.org/cache/epub/{id}/pg{id}.txt",
+]
 
-def urls_for(book_id):
-    return [
-        f"https://www.gutenberg.org/cache/epub/{book_id}/pg{book_id}.txt",
-        f"https://www.gutenberg.org/ebooks/{book_id}.txt.utf-8",
-    ]
+DOWNLOAD_BUDGET = 30 * 60  # 下载总时间最多 30 分钟
+BOOK_DIR = "books"         # 每本书单独保存在这里，训练和下次运行都从这里读取
+
+os.makedirs(BOOK_DIR, exist_ok=True)
 
 def decode(raw_bytes):
     try:
@@ -71,24 +69,25 @@ def strip_gutenberg(raw):
 
 def fetch(book_id):
     last_error = None
-    for url in urls_for(book_id):
-        for wait in [0] + BACKOFF:
-            if wait:
-                time.sleep(wait)
+    for template in MIRRORS:
+        url = template.format(id=book_id)
+        for attempt in range(2):
             try:
                 req = urllib.request.Request(url, headers=HEADERS)
-                raw_bytes = urllib.request.urlopen(req, timeout=60).read()
+                raw_bytes = urllib.request.urlopen(req, timeout=30).read()
                 return strip_gutenberg(decode(raw_bytes))
             except Exception as e:
                 last_error = e
+                time.sleep(3)
     raise last_error
 
 T0 = time.time()
 parts = []
 from_cache = 0
+downloaded = 0
 
 for book_id, name in BOOKS.items():
-    path = os.path.join(CACHE_DIR, f"{book_id}.txt")
+    path = os.path.join(BOOK_DIR, f"{book_id}.txt")
 
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
@@ -100,20 +99,22 @@ for book_id, name in BOOKS.items():
 
     if time.time() - T0 > DOWNLOAD_BUDGET:
         print(f"下载时间已到 30 分钟，跳过剩余书籍：{name} 及之后")
-        break
+        continue
 
     try:
         body = fetch(book_id)
         with open(path, "w", encoding="utf-8") as f:
             f.write(body)
         parts.append(body)
+        downloaded += 1
         print(f"OK  {name}: {len(body)} 字符")
     except Exception as e:
         print(f"跳过 {name}: {e}")
-    time.sleep(GAP_BETWEEN_BOOKS)
+    time.sleep(1)
 
 text = "\n\n".join(parts)
-print(f"语料合计 {len(text)} 字符，共 {len(parts)} 本（缓存 {from_cache} 本），用时 {(time.time() - T0) / 60:.1f} 分钟")
+print(f"语料合计 {len(text)} 字符，共 {len(parts)} 本"
+      f"（缓存 {from_cache} 本，本次下载 {downloaded} 本），用时 {(time.time() - T0) / 60:.1f} 分钟")
 
 if len(text) < 1_000_000:
     raise SystemExit("语料太少，下载失败，已停止。请查看上面的'跳过'行。")
