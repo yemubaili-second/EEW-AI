@@ -2,7 +2,7 @@ import json, os, time
 import numpy as np
 
 np.random.seed(0)
-EPOCH_SECONDS = 60 * 60  # 每轮最多 60 分钟，超时就切换到下一轮
+TOTAL_SECONDS = 300 * 60  # 5 轮合计最多 300 分钟
 
 text = open("corpus.txt", encoding="utf-8").read().replace("\r", "")
 chars = sorted(set(text))
@@ -23,13 +23,16 @@ b1 = np.zeros(H)
 w2 = np.random.randn(H, V) / np.sqrt(H)
 b2 = np.zeros(V)
 
+T0 = time.time()
+stop = False
+
 for epoch in range(EPOCHS):
     perm = np.random.permutation(N)
     total, seen = 0.0, 0
-    start = time.time()
+    epoch_start = time.time()
     for s in range(0, N, BATCH):
-        if time.time() - start > EPOCH_SECONDS:
-            print(f"第 {epoch + 1} 轮超过 60 分钟，已切换到下一轮，本轮处理了 {seen}/{N} 个样本")
+        if time.time() - T0 > TOTAL_SECONDS:
+            stop = True
             break
         idx = perm[s:s + BATCH]
         xb, yb = X[idx], Y[idx]
@@ -62,7 +65,12 @@ for epoch in range(EPOCHS):
         w2 -= LR * dw2
         b2 -= LR * db2
 
-    print(f"epoch {epoch + 1}/{EPOCHS} loss {total / max(seen, 1):.4f} 用时 {time.time() - start:.0f} 秒")
+    pct = 100.0 * seen / N
+    print(f"epoch {epoch + 1}/{EPOCHS} loss {total / max(seen, 1):.4f} "
+          f"完成 {pct:.1f}% 用时 {time.time() - epoch_start:.0f} 秒")
+    if stop:
+        print(f"已达到总时间上限 300 分钟，在第 {epoch + 1} 轮中途停止训练")
+        break
 
 os.makedirs("android/app/src/main/assets", exist_ok=True)
 
@@ -78,4 +86,4 @@ model = {
 with open("android/app/src/main/assets/model.json", "w", encoding="utf-8") as f:
     json.dump(model, f, ensure_ascii=False)
 
-print(f"已导出模型，词表 {V} 个字")
+print(f"已导出模型，词表 {V} 个字，总用时 {(time.time() - T0) / 60:.1f} 分钟")
