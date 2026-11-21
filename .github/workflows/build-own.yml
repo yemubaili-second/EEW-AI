@@ -16,8 +16,23 @@ jobs:
       - name: 安装 numpy
         run: pip install numpy
 
-      - name: 下载公共领域书籍作为语料
+      - name: 恢复已下载过的书籍缓存
+        uses: actions/cache/restore@v4
+        with:
+          path: books
+          key: books-${{ github.run_id }}
+          restore-keys: |
+            books-
+
+      - name: 下载公共领域书籍作为语料（已缓存的跳过）
         run: python get_corpus.py
+
+      - name: 保存书籍缓存（无论成功与否）
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: books
+          key: books-${{ github.run_id }}
 
       - name: 查看语料大小
         run: wc -m corpus.txt
