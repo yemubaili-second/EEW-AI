@@ -9,7 +9,7 @@ ix = {c: i for i, c in enumerate(chars)}
 data = np.array([ix[c] for c in text], dtype=np.int64)
 
 CTX, D, H = 6, 32, 128
-EPOCHS, BATCH, LR = 30, 128, 0.1
+EPOCHS, BATCH, LR = 5, 512, 0.3
 
 X = np.stack([data[i:i + CTX] for i in range(len(data) - CTX)])
 Y = data[CTX:]
