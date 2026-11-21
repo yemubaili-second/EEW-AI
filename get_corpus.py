@@ -147,7 +147,7 @@ def pages_to_texts(xml_pages):
 def stream_wiki(url, target):
     resp = urllib.request.urlopen(urllib.request.Request(url, headers=HEADERS), timeout=120)
     dec = bz2.BZ2Decompressor()
-    utf = codecs.getincrementaldecoder("utf-8")(errors="ignore")()
+    utf = codecs.getincrementaldecoder("utf-8")(errors="ignore")   # 注意：这里不加 ()
     buf = ""
     parts, total = [], 0
     while total < target and not dec.eof:
