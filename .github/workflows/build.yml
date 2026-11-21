@@ -1,0 +1,37 @@
+name: build-apk
+
+on: workflow_dispatch
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 下载语料
+        run: python get_corpus.py
+
+      - name: 训练模型
+        run: python train.py
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: 打包 APK
+        working-directory: android
+        run: gradle assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EEW-AI-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
