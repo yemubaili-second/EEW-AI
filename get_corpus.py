@@ -1,4 +1,5 @@
 import re, time, urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BOOKS = {
     # 中文
@@ -42,12 +43,23 @@ BOOKS = {
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; EEW-AI-corpus/1.0)"}
 
-MIRRORS = [
-    "https://www.gutenberg.org/cache/epub/{id}/pg{id}.txt",
-    "https://gutenberg.pglaf.org/cache/epub/{id}/pg{id}.txt",
-]
-
 DOWNLOAD_BUDGET = 30 * 60  # 下载总时间最多 30 分钟
+WORKERS = 8                # 同时下载的书数
+
+def mirror_path(book_id):
+    digits = str(book_id)
+    if len(digits) == 1:
+        return f"1/{digits}/{digits}.txt"
+    return "/".join(digits[:-1]) + f"/{digits}/{digits}.txt"
+
+def urls_for(book_id):
+    p = mirror_path(book_id)
+    return [
+        f"https://www.gutenberg.org/cache/epub/{book_id}/pg{book_id}.txt",
+        f"https://www.gutenberg.org/files/{book_id}/{book_id}.txt",
+        f"https://mirrors.xmission.com/gutenberg/{p}",
+        f"https://mirror.cs.uwaterloo.ca/gutenberg/{p}",
+    ]
 
 def decode(raw_bytes):
     try:
@@ -66,8 +78,7 @@ def strip_gutenberg(raw):
 
 def fetch(book_id):
     last_error = None
-    for template in MIRRORS:
-        url = template.format(id=book_id)
+    for url in urls_for(book_id):
         for attempt in range(2):
             try:
                 req = urllib.request.Request(url, headers=HEADERS)
@@ -75,23 +86,30 @@ def fetch(book_id):
                 return strip_gutenberg(decode(raw_bytes))
             except Exception as e:
                 last_error = e
-                time.sleep(3)
+                time.sleep(2)
     raise last_error
 
 T0 = time.time()
-parts = []
-for book_id, name in BOOKS.items():
-    if time.time() - T0 > DOWNLOAD_BUDGET:
-        print(f"下载时间已到 30 分钟，跳过剩余书籍：{name} 及之后")
-        break
-    try:
-        body = fetch(book_id)
-        parts.append(body)
-        print(f"OK  {name}: {len(body)} 字符")
-    except Exception as e:
-        print(f"跳过 {name}: {e}")
-    time.sleep(1)
+results = {}
 
+def job(book_id):
+    if time.time() - T0 > DOWNLOAD_BUDGET:
+        raise TimeoutError("下载总时间已到 30 分钟，未开始")
+    return fetch(book_id)
+
+with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+    futures = {pool.submit(job, bid): bid for bid in BOOKS}
+    for fut in as_completed(futures):
+        bid = futures[fut]
+        name = BOOKS[bid]
+        try:
+            body = fut.result()
+            results[bid] = body
+            print(f"OK  {name}: {len(body)} 字符")
+        except Exception as e:
+            print(f"跳过 {name}: {e}")
+
+parts = [results[bid] for bid in BOOKS if bid in results]
 text = "\n\n".join(parts)
 print(f"语料合计 {len(text)} 字符，共 {len(parts)} 本，用时 {(time.time() - T0) / 60:.1f} 分钟")
 
