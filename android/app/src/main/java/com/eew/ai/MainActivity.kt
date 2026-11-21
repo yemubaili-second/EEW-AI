@@ -18,6 +18,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import kotlin.math.exp
+import kotlin.math.sqrt
 import kotlin.math.tanh
 import kotlin.random.Random
 
@@ -42,13 +43,27 @@ class MainActivity : Activity() {
     private var charIndex: HashMap<Char, Int> = HashMap()
     private var ctx = 0
     private var dim = 0
-    private var hidden = 0
+    private var heads = 0
+    private var layers = 0
+    private var ff = 0
     private var vocab = 0
+
     private var emb = FloatArray(0)
-    private var w1 = FloatArray(0)
-    private var b1 = FloatArray(0)
-    private var w2 = FloatArray(0)
-    private var b2 = FloatArray(0)
+    private var pos = FloatArray(0)
+    private var lnfW = FloatArray(0)
+    private var lnfB = FloatArray(0)
+    private var headW = FloatArray(0)
+    private var headB = FloatArray(0)
+    private lateinit var blocks: Array<Block>
+
+    private class Block(
+        val ln1W: FloatArray, val ln1B: FloatArray,
+        val inW: FloatArray, val inB: FloatArray,
+        val outW: FloatArray, val outB: FloatArray,
+        val ln2W: FloatArray, val ln2B: FloatArray,
+        val ff1W: FloatArray, val ff1B: FloatArray,
+        val ff2W: FloatArray, val ff2B: FloatArray
+    )
 
     private val historyFile by lazy { File(filesDir, "chat_history.json") }
 
@@ -182,7 +197,7 @@ class MainActivity : Activity() {
         input.isEnabled = !busy && ready
     }
 
-    // ---------- 模型 ----------
+    // ---------- 模型加载 ----------
 
     private fun loadModel() {
         val text = assets.open("model.json").bufferedReader(Charsets.UTF_8).use { it.readText() }
@@ -193,16 +208,34 @@ class MainActivity : Activity() {
         vocab = chars.size
         ctx = json.getInt("ctx")
         dim = json.getInt("dim")
-        hidden = json.getInt("hidden")
+        heads = json.getInt("heads")
+        layers = json.getInt("layers")
+        ff = json.getInt("ff")
+
         emb = flat(json.getJSONArray("emb"))
-        w1 = flat(json.getJSONArray("w1"))
-        b1 = flat(json.getJSONArray("b1"))
-        w2 = flat(json.getJSONArray("w2"))
-        b2 = flat(json.getJSONArray("b2"))
+        pos = flat(json.getJSONArray("pos"))
+        lnfW = flat(json.getJSONArray("ln_f_w"))
+        lnfB = flat(json.getJSONArray("ln_f_b"))
+        headW = flat(json.getJSONArray("head_w"))
+        headB = flat(json.getJSONArray("head_b"))
+
+        blocks = Array(layers) { i ->
+            val b = json.getJSONObject("l$i")
+            Block(
+                flat(b.getJSONArray("ln1_w")), flat(b.getJSONArray("ln1_b")),
+                flat(b.getJSONArray("in_w")), flat(b.getJSONArray("in_b")),
+                flat(b.getJSONArray("out_w")), flat(b.getJSONArray("out_b")),
+                flat(b.getJSONArray("ln2_w")), flat(b.getJSONArray("ln2_b")),
+                flat(b.getJSONArray("ff1_w")), flat(b.getJSONArray("ff1_b")),
+                flat(b.getJSONArray("ff2_w")), flat(b.getJSONArray("ff2_b"))
+            )
+        }
     }
 
     private fun flat(a: JSONArray): FloatArray =
         FloatArray(a.length()) { a.getDouble(it).toFloat() }
+
+    // ---------- 语言判断 ----------
 
     private fun isCjk(c: Char): Boolean = c in '\u4e00'..'\u9fff'
 
@@ -222,27 +255,114 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun nextLogits(window: IntArray): FloatArray {
-        val xdim = ctx * dim
-        val x = FloatArray(xdim)
-        for (i in 0 until ctx) {
-            val id = window[i]
-            for (d in 0 until dim) x[i * dim + d] = emb[id * dim + d]
+    // ---------- 数学工具 ----------
+
+    // x: (n, inD)，W: (inD, outD) 行优先，结果 (n, outD)
+    private fun linear(x: FloatArray, n: Int, inD: Int, W: FloatArray, b: FloatArray, outD: Int): FloatArray {
+        val out = FloatArray(n * outD)
+        for (t in 0 until n) {
+            for (j in 0 until outD) {
+                var s = b[j]
+                for (i in 0 until inD) s += x[t * inD + i] * W[i * outD + j]
+                out[t * outD + j] = s
+            }
         }
-        val h = FloatArray(hidden)
-        for (j in 0 until hidden) {
-            var s = b1[j]
-            for (k in 0 until xdim) s += x[k] * w1[k * hidden + j]
-            h[j] = tanh(s)
-        }
-        val logits = FloatArray(vocab)
-        for (v in 0 until vocab) {
-            var s = b2[v]
-            for (j in 0 until hidden) s += h[j] * w2[j * vocab + v]
-            logits[v] = s
-        }
-        return logits
+        return out
     }
+
+    private fun layerNorm(x: FloatArray, n: Int, d: Int, w: FloatArray, b: FloatArray): FloatArray {
+        val out = FloatArray(n * d)
+        for (t in 0 until n) {
+            var mean = 0f
+            for (i in 0 until d) mean += x[t * d + i]
+            mean /= d
+            var v = 0f
+            for (i in 0 until d) {
+                val c = x[t * d + i] - mean
+                v += c * c
+            }
+            val inv = 1f / sqrt(v / d + 1e-5f)
+            for (i in 0 until d) out[t * d + i] = (x[t * d + i] - mean) * inv * w[i] + b[i]
+        }
+        return out
+    }
+
+    private fun gelu(v: Float): Float {
+        return 0.5f * v * (1f + tanh(0.7978845608f * (v + 0.044715f * v * v * v)))
+    }
+
+    // 多头自注意力（因果掩码），输入输出 (T, D)
+    private fun attention(x: FloatArray, T: Int, blk: Block): FloatArray {
+        val D = dim
+        val hd = D / heads
+        val qkv = linear(x, T, D, blk.inW, blk.inB, 3 * D)
+        val out = FloatArray(T * D)
+        val scale = 1f / sqrt(hd.toFloat())
+
+        for (h in 0 until heads) {
+            for (t in 0 until T) {
+                val scores = FloatArray(t + 1)
+                var mx = -1e30f
+                for (s in 0..t) {
+                    var dot = 0f
+                    for (d in 0 until hd) {
+                        val qv = qkv[t * 3 * D + h * hd + d]
+                        val kv = qkv[s * 3 * D + D + h * hd + d]
+                        dot += qv * kv
+                    }
+                    scores[s] = dot * scale
+                    if (scores[s] > mx) mx = scores[s]
+                }
+                var sum = 0f
+                for (s in 0..t) {
+                    scores[s] = exp(scores[s] - mx)
+                    sum += scores[s]
+                }
+                for (s in 0..t) {
+                    val a = scores[s] / sum
+                    for (d in 0 until hd) {
+                        out[t * D + h * hd + d] += a * qkv[s * 3 * D + 2 * D + h * hd + d]
+                    }
+                }
+            }
+        }
+        return linear(out, T, D, blk.outW, blk.outB, D)
+    }
+
+    // ---------- 前向推理（只取最后一个位置的输出） ----------
+
+    private fun nextLogits(window: IntArray): FloatArray {
+        val T = ctx
+        val D = dim
+
+        // 字向量 + 位置向量
+        var h = FloatArray(T * D)
+        for (t in 0 until T) {
+            val id = window[t]
+            for (d in 0 until D) h[t * D + d] = emb[id * D + d] + pos[t * D + d]
+        }
+
+        for (blk in blocks) {
+            // 注意力子层（残差）
+            val a = layerNorm(h, T, D, blk.ln1W, blk.ln1B)
+            val att = attention(a, T, blk)
+            for (i in h.indices) h[i] += att[i]
+
+            // 前馈子层（残差）
+            val b = layerNorm(h, T, D, blk.ln2W, blk.ln2B)
+            val f1 = linear(b, T, D, blk.ff1W, blk.ff1B, ff)
+            for (i in f1.indices) f1[i] = gelu(f1[i])
+            val f2 = linear(f1, T, ff, blk.ff2W, blk.ff2B, D)
+            for (i in h.indices) h[i] += f2[i]
+        }
+
+        // 只取最后一个位置，做最终归一化和输出
+        val last = FloatArray(D) { h[(T - 1) * D + it] }
+        val lastN = layerNorm(last, 1, D, lnfW, lnfB)
+        return linear(lastN, 1, D, headW, headB, vocab)
+    }
+
+    // ---------- 生成 ----------
 
     private fun generate(prompt: String, n: Int): String {
         val lang = detectLang(prompt)
