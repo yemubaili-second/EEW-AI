@@ -9,6 +9,10 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  TAG: train-memory
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -25,7 +29,41 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu torch
           pip install numpy
 
-      - name: 下载新增的书籍（已在仓库 books/ 里的跳过）
+      - name: 从 Release 恢复训练记忆
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "没有训练记忆 Release，视为首次运行"
+            exit 0
+          fi
+          # 先删掉仓库里旧的断点，避免误用过期文件
+          rm -rf ckpt
+          mkdir -p /tmp/restore
+          NAMES=$(gh release view "$TAG" --json assets -q '.assets[].name')
+
+          if echo "$NAMES" | grep -qx "books.zip"; then
+            ok=0
+            for i in 1 2 3; do
+              if gh release download "$TAG" -p books.zip -D /tmp/restore --clobber; then ok=1; break; fi
+              echo "书籍包下载失败，第 $i 次重试"; sleep 10
+            done
+            if [ $ok -eq 0 ]; then echo "::error::书籍包下载失败，停止以防丢失记忆"; exit 1; fi
+            unzip -o -q /tmp/restore/books.zip -d .
+            echo "已恢复书籍包"
+          fi
+
+          if echo "$NAMES" | grep -qx "state.pt"; then
+            ok=0
+            for i in 1 2 3; do
+              if gh release download "$TAG" -p state.pt -D /tmp/restore --clobber; then ok=1; break; fi
+              echo "断点下载失败，第 $i 次重试"; sleep 10
+            done
+            if [ $ok -eq 0 ]; then echo "::error::断点下载失败，停止以防丢失进度"; exit 1; fi
+            mkdir -p ckpt
+            cp /tmp/restore/state.pt ckpt/state.pt
+            echo "已恢复训练断点"
+          fi
+
+      - name: 下载新增的书籍（已在 books/ 里的跳过）
         run: python get_corpus.py
 
       - name: 查看语料大小
@@ -34,29 +72,44 @@ jobs:
       - name: 训练模型（断点续训，从零开始不使用预训练权重）
         run: python -u train.py
 
-      - name: 把书籍和训练断点保存回仓库（无论成功与否）
+      - name: 保存训练记忆到 Release（失败自动重试，无论训练成功与否）
         if: always()
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if [ -d books ]; then git add books; fi
-          if [ -d ckpt ]; then git add ckpt; fi
-          if git diff --cached --quiet; then
-            echo "没有新内容需要保存"
-            exit 0
+          rm -f /tmp/books.zip /tmp/state.pt
+          if [ -d books ]; then zip -q -r /tmp/books.zip books; fi
+          if [ -f ckpt/state.pt ]; then cp ckpt/state.pt /tmp/state.pt; fi
+
+          FILES=""
+          if [ -f /tmp/books.zip ]; then FILES="$FILES /tmp/books.zip"; fi
+          if [ -f /tmp/state.pt ]; then FILES="$FILES /tmp/state.pt"; fi
+          if [ -z "$FILES" ]; then echo "没有可保存的文件"; exit 0; fi
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "训练记忆" --notes "自动保存的书籍包和训练断点，请勿手动删除" || true
           fi
-          git commit -m "保存训练记忆 run ${{ github.run_number }}"
+
+          OK=0
           for i in 1 2 3 4 5; do
-            if git pull --rebase --autostash origin main && git push origin HEAD:main; then
-              echo "推送成功"
-              exit 0
-            fi
-            echo "推送失败，第 $i 次重试"
-            git rebase --abort 2>/dev/null || true
-            sleep $((i * 10))
+            if gh release upload "$TAG" $FILES --clobber; then OK=1; break; fi
+            echo "上传失败，第 $i 次重试"; sleep $((i * 10))
           done
-          echo "多次推送失败"
-          exit 1
+
+          if [ $OK -eq 1 ]; then
+            echo "保存成功，Release 中的文件："
+            gh release view "$TAG" --json assets -q '.assets[] | "\(.name)  \(.size) 字节  \(.updatedAt)"'
+          else
+            echo "::warning::Release 保存失败，已通过 Artifact memory-backup 备份，请在本次运行页面下载"
+          fi
+
+      - name: 备份训练记忆为 Artifact（保留 90 天）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-backup
+          path: |
+            /tmp/books.zip
+            /tmp/state.pt
+          if-no-files-found: ignore
 
       - uses: actions/setup-java@v4
         with:
