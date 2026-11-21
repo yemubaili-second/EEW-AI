@@ -1,28 +1,31 @@
-import json, os, time
+import json, os, time, collections
 import numpy as np
 
 np.random.seed(0)
-TOTAL_SECONDS = 300 * 60  # 5 轮合计最多 300 分钟
+TOTAL_SECONDS = 300 * 60   # 5 轮合计最多 300 分钟
+MIN_COUNT = 30             # 出现少于 30 次的字不参与训练
+CTX, D, H = 6, 32, 128
+EPOCHS, BATCH, LR = 5, 4096, 0.6
+F = np.float32
 
-text = open("corpus.txt", encoding="utf-8").read().replace("\r", "")
-chars = sorted(set(text))
+raw = open("corpus.txt", encoding="utf-8").read().replace("\r", "")
+counts = collections.Counter(raw)
+keep = set(c for c, n in counts.items() if n >= MIN_COUNT)
+text = "".join(c for c in raw if c in keep)
+chars = sorted(keep)
 V = len(chars)
 ix = {c: i for i, c in enumerate(chars)}
-data = np.array([ix[c] for c in text], dtype=np.int64)
+data = np.array([ix[c] for c in text], dtype=np.int32)
+N = len(data) - CTX
+print(f"保留字符 {V} 个（原始 {len(counts)} 个），训练样本 {N}")
 
-CTX, D, H = 6, 32, 128
-EPOCHS, BATCH, LR = 5, 512, 0.3
+emb = (np.random.randn(V, D) * 0.1).astype(F)
+w1 = (np.random.randn(CTX * D, H) / np.sqrt(CTX * D)).astype(F)
+b1 = np.zeros(H, dtype=F)
+w2 = (np.random.randn(H, V) / np.sqrt(H)).astype(F)
+b2 = np.zeros(V, dtype=F)
 
-X = np.stack([data[i:i + CTX] for i in range(len(data) - CTX)])
-Y = data[CTX:]
-N = len(Y)
-
-emb = np.random.randn(V, D) * 0.1
-w1 = np.random.randn(CTX * D, H) / np.sqrt(CTX * D)
-b1 = np.zeros(H)
-w2 = np.random.randn(H, V) / np.sqrt(H)
-b2 = np.zeros(V)
-
+offs = np.arange(CTX)
 T0 = time.time()
 stop = False
 
@@ -35,8 +38,9 @@ for epoch in range(EPOCHS):
             stop = True
             break
         idx = perm[s:s + BATCH]
-        xb, yb = X[idx], Y[idx]
         B = len(idx)
+        xb = data[idx[:, None] + offs]
+        yb = data[idx + CTX]
 
         x = emb[xb].reshape(B, CTX * D)
         h = np.tanh(x @ w1 + b1)
@@ -44,10 +48,10 @@ for epoch in range(EPOCHS):
         logits -= logits.max(axis=1, keepdims=True)
         p = np.exp(logits)
         p /= p.sum(axis=1, keepdims=True)
-        total += -np.log(p[np.arange(B), yb] + 1e-12).sum()
+        total += float(-np.log(p[np.arange(B), yb] + 1e-12).sum())
         seen += B
 
-        dl = p.copy()
+        dl = p
         dl[np.arange(B), yb] -= 1
         dl /= B
         dw2 = h.T @ dl
