@@ -12,9 +12,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 下载语料
-        run: python get_corpus.py
-
       - name: 训练模型
         run: python train.py
 
