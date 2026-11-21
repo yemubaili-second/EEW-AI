@@ -20,8 +20,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 安装 numpy
-        run: pip install numpy
+      - name: 安装 PyTorch（CPU 版）和 numpy
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install numpy
 
       - name: 下载新增的书籍（已在仓库 books/ 里的跳过）
         run: python get_corpus.py
