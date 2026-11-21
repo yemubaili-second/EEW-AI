@@ -1,4 +1,4 @@
-import re, time, urllib.request
+ import re, time, urllib.request
 
 BOOKS = {
     # 中文
@@ -42,12 +42,12 @@ BOOKS = {
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; EEW-AI-corpus/1.0)"}
 
-# 官方网站 + 两个镜像站，依次尝试
 MIRRORS = [
     "https://www.gutenberg.org/cache/epub/{id}/pg{id}.txt",
     "https://aleph.gutenberg.org/cache/epub/{id}/pg{id}.txt",
-    "https://gutenberg.pglaf.org/cache/epub/{id}/pg{id}.txt",
 ]
+
+DOWNLOAD_BUDGET = 30 * 60  # 下载总时间最多 30 分钟
 
 def decode(raw_bytes):
     try:
@@ -64,36 +64,36 @@ def strip_gutenberg(raw):
         raw = raw[:m.start()]
     return raw.strip()
 
-def download(url):
-    req = urllib.request.Request(url, headers=HEADERS)
-    return urllib.request.urlopen(req, timeout=60).read()
-
 def fetch(book_id):
     last_error = None
     for template in MIRRORS:
         url = template.format(id=book_id)
-        for attempt in range(5):
+        for attempt in range(2):
             try:
-                return strip_gutenberg(decode(download(url)))
+                req = urllib.request.Request(url, headers=HEADERS)
+                raw_bytes = urllib.request.urlopen(req, timeout=30).read()
+                return strip_gutenberg(decode(raw_bytes))
             except Exception as e:
                 last_error = e
-                wait = 5 * (2 ** attempt)
-                time.sleep(wait)
-        # 当前镜像多次失败，换下一个镜像
+                time.sleep(3)
     raise last_error
 
+T0 = time.time()
 parts = []
 for book_id, name in BOOKS.items():
+    if time.time() - T0 > DOWNLOAD_BUDGET:
+        print(f"下载时间已到 30 分钟，跳过剩余书籍：{name} 及之后")
+        break
     try:
         body = fetch(book_id)
         parts.append(body)
         print(f"OK  {name}: {len(body)} 字符")
     except Exception as e:
         print(f"跳过 {name}: {e}")
-    time.sleep(2)
+    time.sleep(1)
 
 text = "\n\n".join(parts)
-print(f"语料合计 {len(text)} 字符，共 {len(parts)} 本")
+print(f"语料合计 {len(text)} 字符，共 {len(parts)} 本，用时 {(time.time() - T0) / 60:.1f} 分钟")
 
 if len(text) < 1_000_000:
     raise SystemExit("语料太少，下载失败，已停止。请查看上面的'跳过'行。")
