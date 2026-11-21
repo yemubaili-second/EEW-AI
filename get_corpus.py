@@ -44,7 +44,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; EEW-AI-corpus/1.0)"}
 
 MIRRORS = [
     "https://www.gutenberg.org/cache/epub/{id}/pg{id}.txt",
-    "https://aleph.gutenberg.org/cache/epub/{id}/pg{id}.txt",
+    "https://gutenberg.pglaf.org/cache/epub/{id}/pg{id}.txt",
 ]
 
 DOWNLOAD_BUDGET = 30 * 60  # 下载总时间最多 30 分钟
