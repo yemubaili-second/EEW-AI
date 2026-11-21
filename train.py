@@ -4,19 +4,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as Fn
 
-RUN_SECONDS = 300 * 60   # 每次运行最多训练 300 分钟
+RUN_SECONDS = 300 * 60   # 每次运行最多训练 300 分钟，剩余时间留给保存和打包
 MIN_COUNT = 1            # 出现少于 1 次的字符不纳入字表
 CTX = 64                 # 一次看前 64 个字
 D = 64                   # 字向量维度
 HEADS = 4                # 注意力头数
 LAYERS = 2               # 注意力层数
 FF = 256                 # 前馈层大小
-BATCH = 512
+BATCH = 1024             # 每批样本数（512 提高到 1024，提速）
 LR = 3e-4
 SAVE_EVERY = 300         # 每 300 批保存一次断点
-STAGE_EPOCHS = 5         # 每组新书训练的轮数
+STAGE_EPOCHS = 5         # 每组新书训练的轮数（不变）
 REPLAY_RATIO = 0.3       # 训练新书时混入旧书内容的比例
-CHARSET_VERSION = 7      # 模型结构版本：版本不一致时从零训练
+CHARSET_VERSION = 8      # 版本号：版本不一致时从零训练
 BOOK_DIR = "books"
 CKPT_DIR = "ckpt"
 CKPT = os.path.join(CKPT_DIR, "state.pt")
@@ -88,7 +88,7 @@ def load_or_new(books):
         return new_state(chars_all)
     ck = torch.load(CKPT, map_location="cpu", weights_only=False)
     if ck.get("ver") != CHARSET_VERSION:
-        print(f"模型结构版本 {ck.get('ver')} -> {CHARSET_VERSION}，从零开始训练", flush=True)
+        print(f"模型版本 {ck.get('ver')} -> {CHARSET_VERSION}，从零开始训练", flush=True)
         return new_state(chars_all)
     st = new_state(ck["chars"])
     st["model"].load_state_dict(ck["model"])
@@ -114,8 +114,7 @@ def grow_vocab(st, new_n):
         return
     old = st["model"]
     V_old = old.head.out_features
-    V_new = V_old + new_n
-    model = TinyLM(V_new)
+    model = TinyLM(V_old + new_n)
     sd = old.state_dict()
     sd_new = model.state_dict()
     for k in sd:
@@ -178,7 +177,7 @@ def train_stage(st, data, samples, T0):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
-            total += float(loss) * len(idx)
+            total += loss.item() * len(idx)
             seen += len(idx)
             if (bi + 1) % SAVE_EVERY == 0:
                 st["stage_batch"] = bi + 1
