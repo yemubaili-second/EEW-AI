@@ -44,21 +44,12 @@ BOOKS = {
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; EEW-AI-corpus/1.0)"}
 
 DOWNLOAD_BUDGET = 30 * 60  # 下载总时间最多 30 分钟
-WORKERS = 8                # 同时下载的书数
-
-def mirror_path(book_id):
-    digits = str(book_id)
-    if len(digits) == 1:
-        return f"1/{digits}/{digits}.txt"
-    return "/".join(digits[:-1]) + f"/{digits}/{digits}.txt"
+WORKERS = 4                # 同时下载 4 本
 
 def urls_for(book_id):
-    p = mirror_path(book_id)
     return [
         f"https://www.gutenberg.org/cache/epub/{book_id}/pg{book_id}.txt",
-        f"https://www.gutenberg.org/files/{book_id}/{book_id}.txt",
-        f"https://mirrors.xmission.com/gutenberg/{p}",
-        f"https://mirror.cs.uwaterloo.ca/gutenberg/{p}",
+        f"https://www.gutenberg.org/ebooks/{book_id}.txt.utf-8",
     ]
 
 def decode(raw_bytes):
@@ -86,7 +77,7 @@ def fetch(book_id):
                 return strip_gutenberg(decode(raw_bytes))
             except Exception as e:
                 last_error = e
-                time.sleep(2)
+                time.sleep(3)
     raise last_error
 
 T0 = time.time()
