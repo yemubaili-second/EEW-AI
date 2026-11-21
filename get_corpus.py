@@ -57,19 +57,35 @@ def strip_gutenberg(raw):
         raw = raw[:m.start()]
     return raw.strip()
 
+def fetch(book_id):
+    urls = [
+        f"https://www.gutenberg.org/cache/epub/{book_id}/pg{book_id}.txt",
+        f"https://www.gutenberg.org/ebooks/{book_id}.txt.utf-8",
+    ]
+    last_error = None
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers=HEADERS)
+            raw_bytes = urllib.request.urlopen(req, timeout=60).read()
+            return strip_gutenberg(decode(raw_bytes))
+        except Exception as e:
+            last_error = e
+    raise last_error
+
 parts = []
 for book_id, name in BOOKS.items():
-    url = f"https://www.gutenberg.org/ebooks/{book_id}.txt.utf-8"
     try:
-        req = urllib.request.Request(url, headers=HEADERS)
-        raw_bytes = urllib.request.urlopen(req, timeout=60).read()
-        body = strip_gutenberg(decode(raw_bytes))
+        body = fetch(book_id)
         parts.append(body)
         print(f"OK  {name}: {len(body)} 字符")
     except Exception as e:
         print(f"跳过 {name}: {e}")
 
 text = "\n\n".join(parts)
+print(f"语料合计 {len(text)} 字符，共 {len(parts)} 本")
+
+if len(text) < 1_000_000:
+    raise SystemExit("语料太少，下载失败，已停止。请查看上面的'跳过'行。")
+
 with open("corpus.txt", "w", encoding="utf-8") as f:
     f.write(text)
-print(f"语料合计 {len(text)} 字符，共 {len(parts)} 本")
