@@ -1,4 +1,4 @@
- import re, time, urllib.request
+import re, time, urllib.request
 
 BOOKS = {
     # 中文
