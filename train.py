@@ -2,13 +2,13 @@ import json, os, time, glob, collections
 import numpy as np
 
 RUN_SECONDS = 300 * 60   # 每次运行最多训练 300 分钟
-MIN_COUNT = 30           # 出现少于 30 次的字符不纳入字表
+MIN_COUNT = 1            # 出现少于 1 次的字符不纳入字表（即全部保留）
 CTX, D, H = 6, 32, 128
 BATCH, LR = 4096, 0.6
 SAVE_EVERY = 300         # 每 300 批保存一次断点
 STAGE_EPOCHS = 5         # 每组新书训练的轮数
 REPLAY_RATIO = 0.3       # 训练新书时混入旧书内容的比例
-CHARSET_VERSION = 2      # 字表规则版本：2 表示保留所有字符（含英文）
+CHARSET_VERSION = 3      # 字表规则版本：3 表示保留全部字符，出现 1 次即收录
 BOOK_DIR = "books"
 CKPT_DIR = "ckpt"
 CKPT = os.path.join(CKPT_DIR, "state.npz")
@@ -189,8 +189,7 @@ if not books:
 
 st = load_state()
 if st["ver"] != CHARSET_VERSION:
-    # 字表规则升级：参数保留，但之前的训练只学到了中文，需要用全部字符重新学一遍
-    print(f"字表版本 {st['ver']} -> {CHARSET_VERSION}，清空已训练记录，全部书籍将用新字表重新训练一次")
+    print(f"字表版本 {st['ver']} -> {CHARSET_VERSION}，清空已训练记录，全部书籍将用新字表重新训练一次", flush=True)
     st["trained"], st["stage"] = [], []
     st["stage_epoch"], st["stage_batch"] = 0, 0
     st["ver"] = CHARSET_VERSION
