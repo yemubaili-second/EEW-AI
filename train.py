@@ -4,19 +4,20 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as Fn
 
-RUN_SECONDS = 300 * 60   # 每次运行最多训练 300 分钟，剩余时间留给保存和打包
+RUN_SECONDS = 315 * 60   # 每次运行最多训练 315 分钟
 MIN_COUNT = 1            # 出现少于 1 次的字符不纳入字表
 CTX = 64                 # 一次看前 64 个字
 D = 64                   # 字向量维度
 HEADS = 4                # 注意力头数
 LAYERS = 2               # 注意力层数
 FF = 256                 # 前馈层大小
-BATCH = 1024             # 每批样本数（512 提高到 1024，提速）
+BATCH = 1024             # 每批样本数（保持不变）
 LR = 3e-4
 SAVE_EVERY = 300         # 每 300 批保存一次断点
 STAGE_EPOCHS = 5         # 每组新书训练的轮数（不变）
 REPLAY_RATIO = 0.3       # 训练新书时混入旧书内容的比例
-CHARSET_VERSION = 9      # 版本号：版本不一致时从零训练
+CHARSET_VERSION = 9      # 版本号（不变，保留学习进度）
+USE_COMPILE = True       # 是否使用 torch.compile 加速（失败会自动回退）
 BOOK_DIR = "books"
 CKPT_DIR = "ckpt"
 CKPT = os.path.join(CKPT_DIR, "state.pt")
@@ -25,6 +26,27 @@ MODEL_OUT = "android/app/src/main/assets/model.json"
 torch.manual_seed(0)
 np.random.seed(0)
 torch.set_num_threads(os.cpu_count() or 2)
+
+class Attn(nn.Module):
+    # 与原来的参数名保持一致，断点和导出都能直接使用
+    def __init__(self):
+        super().__init__()
+        self.in_proj_weight = nn.Parameter(torch.empty(3 * D, D))
+        self.in_proj_bias = nn.Parameter(torch.zeros(3 * D))
+        nn.init.xavier_uniform_(self.in_proj_weight)
+        self.out_proj = nn.Linear(D, D)
+
+    def forward(self, x):
+        B, T, _ = x.shape
+        qkv = Fn.linear(x, self.in_proj_weight, self.in_proj_bias)
+        q, k, v = qkv.chunk(3, dim=-1)
+        hd = D // HEADS
+        q = q.view(B, T, HEADS, hd).transpose(1, 2)
+        k = k.view(B, T, HEADS, hd).transpose(1, 2)
+        v = v.view(B, T, HEADS, hd).transpose(1, 2)
+        y = Fn.scaled_dot_product_attention(q, k, v, is_causal=True)
+        y = y.transpose(1, 2).reshape(B, T, D)
+        return self.out_proj(y)
 
 class TinyLM(nn.Module):
     def __init__(self, vocab):
@@ -35,25 +57,24 @@ class TinyLM(nn.Module):
         for _ in range(LAYERS):
             self.layers.append(nn.ModuleDict({
                 "ln1": nn.LayerNorm(D),
-                "attn": nn.MultiheadAttention(D, HEADS, batch_first=True),
+                "attn": Attn(),
                 "ln2": nn.LayerNorm(D),
                 "ff": nn.Sequential(nn.Linear(D, FF), nn.GELU(), nn.Linear(FF, D)),
             }))
         self.ln_f = nn.LayerNorm(D)
         self.head = nn.Linear(D, vocab)
-        mask = torch.triu(torch.ones(CTX, CTX, dtype=torch.bool), diagonal=1)
-        self.register_buffer("mask", mask)
 
     def forward(self, x):
         T = x.size(1)
         h = self.emb(x) + self.pos[:T]
-        m = self.mask[:T, :T]
         for layer in self.layers:
-            a = layer["ln1"](h)
-            a, _ = layer["attn"](a, a, a, attn_mask=m, need_weights=False)
+            a = layer["attn"](layer["ln1"](h))
             h = h + a
             h = h + layer["ff"](layer["ln2"](h))
         return self.head(self.ln_f(h[:, -1, :]))
+
+def make_opt(model):
+    return torch.optim.AdamW(model.parameters(), lr=LR, foreach=True)
 
 def load_books():
     books = {}
@@ -76,7 +97,7 @@ def new_state(chars):
     model = TinyLM(len(chars))
     return {
         "model": model,
-        "opt": torch.optim.AdamW(model.parameters(), lr=LR),
+        "opt": make_opt(model),
         "chars": chars, "trained": [], "stage": [],
         "stage_epoch": 0, "stage_batch": 0, "runs": 0,
         "ver": CHARSET_VERSION,
@@ -97,6 +118,7 @@ def load_or_new(books):
     return st
 
 def save_state(st):
+    # 保存的是原始模型（不是编译后的包装），断点格式与之前完全一致
     os.makedirs(CKPT_DIR, exist_ok=True)
     tmp = os.path.join(CKPT_DIR, "tmp.pt")
     torch.save({
@@ -124,7 +146,7 @@ def grow_vocab(st, new_n):
             sd_new[k][:V_old] = sd[k]
     model.load_state_dict(sd_new)
     st["model"] = model
-    st["opt"] = torch.optim.AdamW(model.parameters(), lr=LR)
+    st["opt"] = make_opt(model)
 
 def encode(text, ix):
     return np.fromiter((ix[c] for c in text if c in ix), dtype=np.int64)
@@ -157,11 +179,21 @@ def train_stage(st, data, samples, T0):
     offs = torch.arange(CTX)
     model, opt = st["model"], st["opt"]
     model.train()
+
+    fwd = model
+    if USE_COMPILE:
+        try:
+            fwd = torch.compile(model)
+        except Exception as e:
+            print(f"torch.compile 不可用，使用普通模式：{e}", flush=True)
+            fwd = model
+
     nb = (len(samples) + BATCH - 1) // BATCH
     while st["stage_epoch"] < STAGE_EPOCHS:
         rng = np.random.default_rng(1000 + st["stage_epoch"])
         perm = torch.from_numpy(samples[rng.permutation(len(samples))])
-        total, seen = 0.0, 0
+        total = torch.zeros((), dtype=torch.float64)
+        seen = 0
         t_ep = time.time()
         for bi in range(st["stage_batch"], nb):
             if time.time() - T0 > RUN_SECONDS:
@@ -171,18 +203,25 @@ def train_stage(st, data, samples, T0):
             idx = perm[bi * BATCH:(bi + 1) * BATCH]
             xb = data_t[idx[:, None] + offs]
             yb = data_t[idx + CTX]
-            logits = model(xb)
+            try:
+                logits = fwd(xb)
+            except Exception as e:
+                if fwd is model:
+                    raise
+                print(f"编译模式运行失败，回退普通模式：{e}", flush=True)
+                fwd = model
+                logits = fwd(xb)
             loss = Fn.cross_entropy(logits, yb)
-            opt.zero_grad()
+            opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
-            total += loss.item() * len(idx)
+            total += loss.detach().double() * len(idx)
             seen += len(idx)
             if (bi + 1) % SAVE_EVERY == 0:
                 st["stage_batch"] = bi + 1
                 save_state(st)
-        print(f"第 {st['stage_epoch'] + 1}/{STAGE_EPOCHS} 轮 loss {total / max(seen, 1):.4f} "
+        print(f"第 {st['stage_epoch'] + 1}/{STAGE_EPOCHS} 轮 loss {total.item() / max(seen, 1):.4f} "
               f"用时 {time.time() - t_ep:.0f} 秒", flush=True)
         st["stage_epoch"] += 1
         st["stage_batch"] = 0
@@ -248,7 +287,7 @@ while True:
 export(st)
 save_state(st)
 if status == "timeout":
-    print("已达到本次 300 分钟上限，断点已保存，下次运行会接着训练", flush=True)
+    print("已达到本次 315 分钟上限，断点已保存，下次运行会接着训练", flush=True)
 else:
     print("所有书籍已训练完成", flush=True)
 print(f"已导出模型，本次用时 {(time.time() - T0) / 60:.1f} 分钟", flush=True)
